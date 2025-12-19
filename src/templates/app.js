@@ -50,7 +50,6 @@ Devvit.addCustomPostType({
 
     // Handle messages from webview
     const onMessage = async (event: any) => {
-      // In Devvit Blocks, the event object IS the message payload
       const msg = event;
       const { type, data, messageId } = msg;
       
@@ -61,19 +60,20 @@ Devvit.addCustomPostType({
           return;
       }
 
-      console.log(\`[Devvit] Received message: \${type}\`);
+      // console.log(\`[Devvit] Rx: \${type} (userInfo: \${!!userInfo})\`);
       
       try {
         // Pass userInfo to allow bridge to skip redundant server calls
         const result = await bridge.handleMessage(type, data, userInfo);
+        
         // Send response back to webview
-        context.ui.webView.postMessage('game-webview', {
+        await context.ui.webView.postMessage('game-webview', {
           type: 'devvit-response',
           data: { messageId, result }
         });
       } catch (error: any) {
-        console.error(\`[Devvit] Error handling message \${type}:\`, error);
-        context.ui.webView.postMessage('game-webview', {
+        console.error(\`[Devvit] Error handling \${type}:\`, error);
+        await context.ui.webView.postMessage('game-webview', {
           type: 'devvit-response',
           data: { messageId, error: error.message || 'Unknown error' }
         });

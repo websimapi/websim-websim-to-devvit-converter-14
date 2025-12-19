@@ -226,6 +226,16 @@ export class DevvitBridge {
   // USER IDENTITY HANDLERS
   private async handleGetUserInfo(data: { userId?: string, username?: string }) {
     try {
+      // Optimization: If asking for current user, return Guest if we can't fetch
+      if (!data.userId && !data.username) {
+          try {
+              const u = await this.context.reddit.getCurrentUser();
+              if (u) return this.handleGetUserInfo({ userId: u.id });
+          } catch(e) {
+              return { success: true, data: { id: 'guest', username: 'Guest', avatarUrl: this.getDefaultAvatar() } };
+          }
+      }
+
       let user;
       if (data.userId) {
         user = await this.context.reddit.getUserById(data.userId);
@@ -266,25 +276,23 @@ export class DevvitBridge {
   }
 
   private async handleGetCurrentUser(_data: any) {
+    // If we're here, it means the optimization failed (no currentUser passed)
+    // We try to fetch from Reddit API, but this might fail in some contexts (ServerCallRequired)
+    // If it fails, we fallback gracefully to Anonymous/Guest
     try {
       const user = await this.context.reddit.getCurrentUser();
-      if (!user) {
-        return { 
-          success: true, 
-          data: { id: 'anonymous', username: 'Guest', avatarUrl: this.getDefaultAvatar(), isAnonymous: true } 
-        };
-      }
+      if (!user) throw new Error('No user found');
+      
       const snoovatarUrl = await this.context.reddit.getSnoovatarUrl(user.username);
       return { 
         success: true, 
         data: { id: user.id, username: user.username, avatarUrl: snoovatarUrl || this.getDefaultAvatar(), isAnonymous: false } 
       };
     } catch (error: any) {
-      console.error('[User] getCurrentUser error:', error);
+      console.warn('[User] getCurrentUser failed (likely ServerCallRequired), falling back to Guest:', error.message);
       return { 
-        success: false, 
-        error: error.message, 
-        data: { id: 'anonymous', username: 'Guest', avatarUrl: this.getDefaultAvatar(), isAnonymous: true } 
+        success: true, // Return success so client doesn't timeout/error
+        data: { id: 'guest_' + Math.random().toString(36).substr(2,9), username: 'Guest', avatarUrl: this.getDefaultAvatar(), isAnonymous: true } 
       };
     }
   }
