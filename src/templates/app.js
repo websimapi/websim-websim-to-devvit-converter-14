@@ -51,16 +51,17 @@ Devvit.addCustomPostType({
 
     // Handle messages from webview
     const onMessage = async (event: any) => {
-      // Robust message parsing
+      // Robust message parsing. Devvit 0.11+ passes JSON directly.
       let msg = event;
       
-      // Attempt to extract the actual payload
+      // Attempt to extract the actual payload if it's wrapped oddly
       if (event && typeof event === 'object') {
-          if (event.type && event.data && event.messageId) {
-              // Direct payload
+          // Case: { type: '...', data: '...' } (Standard)
+          if (event.type && (event.data !== undefined || event.messageId)) {
               msg = event;
-          } else if (event.data && typeof event.data === 'object') {
-              // Wrapped in event.data
+          } 
+          // Case: { data: { type: '...' } } (Wrapped in data property)
+          else if (event.data && typeof event.data === 'object') {
               msg = event.data;
           }
       } else if (typeof event === 'string') {

@@ -62,8 +62,6 @@ export default defineConfig({
       // CRITICAL: Remotion and some React libs might try to import jsx-dev-runtime in 'dev' mode.
       // We alias to a local proxy that implements jsxDEV using the production jsx runtime.
       'react/jsx-dev-runtime': '/jsx-dev-proxy.js',
-      'react/jsx-runtime': 'react/jsx-runtime',
-      'remotion': 'remotion',
       'websim': '/websim_package.js'
     },
     // Ensure we prioritize browser builds
@@ -94,7 +92,7 @@ export default defineConfig({
     "process.env.REMOTION_ENV": JSON.stringify("production"),
   },
   optimizeDeps: {
-    include: [${hasReact ? "'react', 'react-dom', 'react/jsx-runtime'" : ""}, ${hasRemotion ? "'remotion', '@remotion/player'" : ""}]
+    include: [${hasReact ? "'react', 'react-dom'" : ""}, ${hasRemotion ? "'remotion', '@remotion/player'" : ""}]
   }
 });
 `;
