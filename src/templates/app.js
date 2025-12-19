@@ -26,44 +26,36 @@ Devvit.addCustomPostType({
     }
     const bridge = activeBridges.get(postId)!;
 
-    // Fetch user identity on mount
-    const [userInfo, setUserInfo] = context.useState<any>(null);
-    const [isReady, setIsReady] = context.useState(false);
-
-    context.useAsync(async () => {
+    // Fetch user identity using async useState initializer
+    const [userInfo] = context.useState<any>(async () => {
       try {
-        // Get current user info with avatar
         const user = await context.reddit.getCurrentUser();
         if (user) {
           const snoovatarUrl = await context.reddit.getSnoovatarUrl(user.username);
-          setUserInfo({
+          return {
             id: user.id,
             username: user.username,
             avatarUrl: snoovatarUrl || getDefaultAvatar(),
             isAnonymous: false
-          });
+          };
         } else {
-          // Anonymous user
-          setUserInfo({
+          return {
             id: 'anonymous',
             username: 'Guest',
             avatarUrl: getDefaultAvatar(),
             isAnonymous: true
-          });
+          };
         }
-        setIsReady(true);
       } catch (error) {
         console.error('[Devvit] Failed to fetch user info:', error);
-        // Fallback to guest
-        setUserInfo({
+        return {
           id: 'anonymous',
           username: 'Guest',
           avatarUrl: getDefaultAvatar(),
           isAnonymous: true
-        });
-        setIsReady(true);
+        };
       }
-    }, { depends: [] });
+    });
 
     // Handle messages from webview
     const onMessage = async (event: any) => {
@@ -94,31 +86,22 @@ Devvit.addCustomPostType({
       }
     };
 
-    // Listen for realtime messages and forward to webview
-    if (context.realtime) {
-      const mainChannel = context.realtime.channel(\`post:\${postId}:main\`); // or 'global' depending on bridge
-      // The bridge currently hardcodes 'global' in some places, but context.realtime handles scoping usually.
-      // However, to receive broadcasts initiated by other clients (via bridge -> realtime.send), we need to subscribe.
-      // Since the bridge logic does 'channel.subscribe()' inside 'realtime:join', this part might be redundant
-      // IF the Devvit runtime calls the WebView callbacks automatically?
-      // No, Devvit realtime events come into the Block via hooks usually, OR the server bridge handles it?
-      // Wait, context.realtime.channel(...).subscribe(onMsg) works in the block.
-      // The bridge server logic calls 'channel.send'.
-      // To receive that in the block (and forward to webview), we need to subscribe here in the block.
-      
-      // Let's assume 'global' channel for now as per polyfill
-      const globalChan = context.realtime.channel('global'); 
-      context.useAsync(async () => {
-         globalChan.subscribe((msg) => {
-             context.ui.webView.postMessage('game-webview', {
-                 type: 'devvit-realtime',
-                 data: { message: msg }
-             });
-         });
-      }, { depends: [] });
-    }
+    // Realtime forwarding setup - runs once on mount
+    const [_realtimeSetup] = context.useState(async () => {
+      if (context.realtime) {
+        // Use the global channel as defined in the bridge polyfill
+        const globalChan = context.realtime.channel('global');
+        await globalChan.subscribe((msg) => {
+            context.ui.webView.postMessage('game-webview', {
+                type: 'devvit-realtime',
+                data: { message: msg }
+            });
+        });
+      }
+      return true;
+    });
 
-    if (!isReady) {
+    if (!userInfo) {
       return (
         <vstack height="100%" width="100%" alignment="center middle">
           <text size="large">Loading...</text>
