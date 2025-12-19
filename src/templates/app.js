@@ -1,0 +1,177 @@
+export const getMainTsx = (title, webviewPath) => `/** @jsx Devvit.createElement */
+/** @jsxFrag Devvit.Fragment */
+
+import { Devvit } from '@devvit/public-api';
+import { DevvitBridge } from './devvit-bridge.js';
+
+Devvit.configure({
+  redditAPI: true,
+  redis: true,
+  realtime: true,
+  http: false,
+});
+
+// Track active bridges by post
+const activeBridges = new Map<string, DevvitBridge>();
+
+Devvit.addCustomPostType({
+  name: '${title.replace(/'/g, "\\'")}',
+  height: 'tall',
+  render: (context) => {
+    const postId = context.postId || 'preview';
+    
+    // Initialize bridge for this post if not exists
+    if (!activeBridges.has(postId)) {
+      activeBridges.set(postId, new DevvitBridge(context));
+    }
+    const bridge = activeBridges.get(postId)!;
+
+    // Fetch user identity on mount
+    const [userInfo, setUserInfo] = context.useState<any>(null);
+    const [isReady, setIsReady] = context.useState(false);
+
+    context.useAsync(async () => {
+      try {
+        // Get current user info with avatar
+        const user = await context.reddit.getCurrentUser();
+        if (user) {
+          const snoovatarUrl = await context.reddit.getSnoovatarUrl(user.username);
+          setUserInfo({
+            id: user.id,
+            username: user.username,
+            avatarUrl: snoovatarUrl || getDefaultAvatar(),
+            isAnonymous: false
+          });
+        } else {
+          // Anonymous user
+          setUserInfo({
+            id: 'anonymous',
+            username: 'Guest',
+            avatarUrl: getDefaultAvatar(),
+            isAnonymous: true
+          });
+        }
+        setIsReady(true);
+      } catch (error) {
+        console.error('[Devvit] Failed to fetch user info:', error);
+        // Fallback to guest
+        setUserInfo({
+          id: 'anonymous',
+          username: 'Guest',
+          avatarUrl: getDefaultAvatar(),
+          isAnonymous: true
+        });
+        setIsReady(true);
+      }
+    }, { depends: [] });
+
+    // Handle messages from webview
+    const onMessage = async (event: any) => {
+      const { type, data, messageId } = event.data;
+      
+      // Console logging passthrough
+      if (type === 'console') {
+          const args = event.data.args || [];
+          console.log('[Web]', ...args);
+          return;
+      }
+
+      console.log(\`[Devvit] Received message: \${type}\`);
+      
+      try {
+        const result = await bridge.handleMessage(type, data);
+        // Send response back to webview
+        context.ui.webView.postMessage('game-webview', {
+          type: 'devvit-response',
+          data: { messageId, result }
+        });
+      } catch (error: any) {
+        console.error(\`[Devvit] Error handling message \${type}:\`, error);
+        context.ui.webView.postMessage('game-webview', {
+          type: 'devvit-response',
+          data: { messageId, error: error.message || 'Unknown error' }
+        });
+      }
+    };
+
+    // Listen for realtime messages and forward to webview
+    if (context.realtime) {
+      const mainChannel = context.realtime.channel(\`post:\${postId}:main\`); // or 'global' depending on bridge
+      // The bridge currently hardcodes 'global' in some places, but context.realtime handles scoping usually.
+      // However, to receive broadcasts initiated by other clients (via bridge -> realtime.send), we need to subscribe.
+      // Since the bridge logic does 'channel.subscribe()' inside 'realtime:join', this part might be redundant
+      // IF the Devvit runtime calls the WebView callbacks automatically?
+      // No, Devvit realtime events come into the Block via hooks usually, OR the server bridge handles it?
+      // Wait, context.realtime.channel(...).subscribe(onMsg) works in the block.
+      // The bridge server logic calls 'channel.send'.
+      // To receive that in the block (and forward to webview), we need to subscribe here in the block.
+      
+      // Let's assume 'global' channel for now as per polyfill
+      const globalChan = context.realtime.channel('global'); 
+      context.useAsync(async () => {
+         globalChan.subscribe((msg) => {
+             context.ui.webView.postMessage('game-webview', {
+                 type: 'devvit-realtime',
+                 data: { message: msg }
+             });
+         });
+      }, { depends: [] });
+    }
+
+    if (!isReady) {
+      return (
+        <vstack height="100%" width="100%" alignment="center middle">
+          <text size="large">Loading...</text>
+        </vstack>
+      );
+    }
+
+    return (
+      <vstack height="100%" width="100%">
+        <webview
+          id="game-webview"
+          url="${webviewPath}"
+          onMessage={onMessage}
+          height="100%"
+          width="100%"
+        />
+      </vstack>
+    );
+  },
+});
+
+function getDefaultAvatar(): string {
+  return 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%233b82f6"/%3E%3Ctext x="50" y="50" text-anchor="middle" dy=".3em" fill="white" font-size="40" font-family="Arial"%3E?%3C/text%3E%3C/svg%3E';
+}
+
+Devvit.addMenuItem({
+  label: 'Create ${title.replace(/'/g, "\\'")}',
+  location: 'subreddit',
+  // forUserType: 'moderator', // Optional constraint
+  onPress: async (_event, context) => {
+    const { reddit, ui } = context;
+    try {
+      const subreddit = await reddit.getCurrentSubreddit();
+      const post = await reddit.submitPost({
+        title: '${title.replace(/'/g, "\\'")}',
+        subredditName: subreddit.name,
+        preview: (
+          <vstack padding="medium" cornerRadius="medium">
+            <text size="xlarge" weight="bold">${title.replace(/'/g, "\\'")}</text>
+            <spacer />
+            <text color="neutral-content-weak">Click to play!</text>
+          </vstack>
+        ),
+      });
+      ui.showToast({ text: 'Post created!', appearance: 'success' });
+      ui.navigateTo(post);
+    } catch (error) {
+      console.error('Error creating post:', error);
+      ui.showToast({ text: 'Failed to create post', appearance: 'neutral' });
+    }
+  },
+});
+
+export default Devvit;
+`;
+
