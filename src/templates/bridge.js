@@ -34,6 +34,29 @@ export class DevvitBridge {
   }
 
   async handleMessage(type: string, data: any): Promise<any> {
+    // Handle wrapped legacy messages if they slip through
+    if (type === 'WEBSIM_SOCKET_MSG' && data && data.payload) {
+        // Unwrap and recurse
+        console.log('[Bridge] unwrapping WEBSIM_SOCKET_MSG', data.payload.type);
+        // Map legacy types to bridge types
+        const map: Record<string, string> = {
+            'join': 'realtime:join',
+            'presence_update': 'realtime:updatePresence',
+            'room_state_update': 'realtime:updateRoomState',
+            'broadcast_event': 'realtime:send',
+            'db_load': 'db:hGetAll', // Approximate mapping
+        };
+        const targetType = map[data.payload.type];
+        if (targetType) {
+            // Adapt payload differences
+            let payload = data.payload.payload || {};
+            if (data.payload.type === 'join') payload = { channelName: 'global' };
+            if (data.payload.type === 'db_load') payload = { key: 'collection:' + payload.collection };
+            
+            return this.handleMessage(targetType, payload);
+        }
+    }
+
     const handler = this.messageHandlers.get(type);
     if (!handler) {
       throw new Error(\`Unknown message type: \${type}\`);
@@ -106,7 +129,7 @@ export class DevvitBridge {
   
   private async handleRealtimeJoin(data: { channelName: string }) {
     // Just ack
-    return { success: true, channelId: data.channelName };
+    return { success: true, channelId: data.channelName || 'global' };
   }
 
   private async handleRealtimeSend(data: { channelName: string, message: any }) {

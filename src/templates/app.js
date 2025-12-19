@@ -125,12 +125,21 @@ Devvit.addMenuItem({
         title: '${title.replace(/'/g, "\\'")}',
         subredditName: subreddit.name,
         preview: (
-          <vstack padding="medium" cornerRadius="medium">
-            <text size="xlarge" weight="bold">${title.replace(/'/g, "\\'")}</text>
-            <spacer />
-            <text color="neutral-content-weak">Click to play!</text>
+          <vstack padding="medium" cornerRadius="medium" height="100%" alignment="center middle" backgroundColor="#0f172a">
+            <text size="xxlarge" weight="bold" color="#f8fafc">${title.replace(/'/g, "\\'")}</text>
+            <spacer size="medium" />
+            <text size="large" color="#94a3b8">Click to start playing</text>
+            <spacer size="large" />
+            <button appearance="primary" onPress={() => context.ui.navigateTo(post)}>Launch Game</button>
           </vstack>
         ),
+        // Splash screen configuration (for supported clients)
+        splash: {
+          appDisplayName: '${title.replace(/'/g, "\\'")}',
+          buttonLabel: 'Play Now',
+          description: 'A WebSim Game converted to Devvit',
+          entryUri: '${webviewPath}', // Typically index.html
+        }
       });
       ui.showToast({ text: 'Post created!', appearance: 'success' });
       ui.navigateTo(post);

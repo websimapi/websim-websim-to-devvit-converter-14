@@ -111,26 +111,15 @@ export class WebSimDetector {
      * Process HTML to inject Devvit bridge
      */
     processHTML(html, filename = 'index.html') {
+        // Bridge is now injected globally by processors.js to ensure consistency
+        // We just log detection here
         const { detectedAPIs } = this;
-        
-        // Check if we need to inject the bridge
         const needsBridge = Object.values(detectedAPIs).some(v => v);
 
-        if (!needsBridge) {
-            console.log(`[Detector] No WebSim APIs detected in ${filename}`);
-            return html;
-        }
-
-        console.log(`[Detector] WebSim APIs detected:`, detectedAPIs);
-        console.log(`[Detector] Injecting Devvit bridge into ${filename}`);
-
-        // Inject the Devvit bridge polyfill before any other scripts
-        const bridgeScript = `<script type="module" src="./devvit-bridge-client.js"></script>`;
-        
-        if (html.includes('<head>')) {
-            html = html.replace('<head>', `<head>\n    ${bridgeScript}`);
+        if (needsBridge) {
+            console.log(`[Detector] WebSim APIs detected in ${filename}:`, detectedAPIs);
         } else {
-            html = `${bridgeScript}\n${html}`;
+            console.log(`[Detector] No WebSim APIs detected in ${filename}`);
         }
 
         return html;

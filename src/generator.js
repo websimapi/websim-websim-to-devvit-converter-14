@@ -131,18 +131,14 @@ export async function generateDevvitZip(projectMeta, assets, includeReadme = tru
 
     // Add Polyfills
     clientFolder.file("logger.js", simpleLoggerJs);
-    // Keep old socket polyfill for backwards compatibility if needed, 
-    // but the detector injects 'devvit-bridge-client.js' which overwrites window.WebsimSocket
-    clientFolder.file("websim_socket.js", websimSocketPolyfill); 
+    // websim_socket.js is removed in favor of the more robust devvit-bridge-client.js (websimToDevvitPolyfill)
     clientFolder.file("websim_stubs.js", websimStubsJs);
     clientFolder.file("websim_package.js", websimPackageJs);
     clientFolder.file("jsx-dev-proxy.js", jsxDevProxy);
 
-    // Add Devvit Bridge Client-Side Polyfill if detected
-    if (apiSummary.needsDevvitBridge) {
-        console.log('[Generator] Injecting Devvit bridge polyfill...');
-        clientFolder.file("devvit-bridge-client.js", websimToDevvitPolyfill);
-    }
+    // Always include Devvit Bridge Client-Side Polyfill
+    // It handles WebSimSocket, Collections, and general Bridge comms
+    clientFolder.file("devvit-bridge-client.js", websimToDevvitPolyfill);
 
     // Add Remotion Bridge
     if (hasRemotion) {
