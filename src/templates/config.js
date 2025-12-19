@@ -26,17 +26,15 @@ export const generatePackageJson = (slug, dependencies = {}, devDependencies = {
   }
 }, null, 2);
 
-export const generateDevvitJson = (slug) => JSON.stringify({
-  "name": slug,
-  "version": "0.1.0",
-  "webroot": "webroot",
-  "permissions": {
-    "redis": true,
-    "realtime": true,
-    "reddit_api": true,
-    "http": true // Enabled for external fetch if needed
-  }
-}, null, 2);
+export const generateDevvitYaml = (slug) => `name: ${slug}
+version: 0.1.0
+webroot: webroot
+permissions:
+  - redis
+  - realtime
+  - reddit_api
+  - http
+`;
 
 export const generateViteConfig = ({ hasReact = false, hasRemotion = false } = {}) => `
 import { defineConfig } from 'vite';
@@ -76,7 +74,8 @@ export default defineConfig({
     outDir: '../webroot',
     emptyOutDir: true,
     target: 'es2020',
-    minify: 'esbuild', // standard minification
+    minify: 'esbuild',
+    chunkSizeWarningLimit: 1000,
     rollupOptions: {
       output: {
         entryFileNames: "[name].js",

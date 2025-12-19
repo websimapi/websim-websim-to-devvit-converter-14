@@ -67,10 +67,17 @@ files.forEach(fileObj => {
         }
         
         // Check for http/https usage in imports/scripts
-        // Only warn if it looks like a script source or import
-        if (content.match(/from\\s*['"]http/) || content.match(/src\\s*=\\s*['"]http/)) {
+        // More strict regex to avoid false positives in minified code (e.g. strings containing URLs)
+        const remoteImportRegex = f.endsWith('.html') 
+            ? /<script[^>]+src=["']http/i 
+            : /import\\s+.*from\\s*['"]http|import\\s*['"]http|import\\(['"]http/;
+            
+        if (remoteImportRegex.test(content)) {
             console.warn(\`⚠️  Possible remote import in \${f}. Devvit may block this.\`);
-            console.warn(\`   Context: \${content.match(/(from|src).*http[^'"]*/)?.[0]}\`);
+            // Show a small snippet for context
+            const match = content.match(remoteImportRegex);
+            const context = content.substring(Math.max(0, match.index - 20), Math.min(content.length, match.index + 50));
+            console.warn(\`   Context: ...\${context}...\`);
             issues++;
         }
 
@@ -140,12 +147,13 @@ async function checkRemotion() {
 }
 
 // Cleanup old config if exists to prevent conflicts
-if (fs.existsSync('devvit.json')) {
-    try {
-        fs.unlinkSync('devvit.json');
-        console.log('cleaned up old devvit.json');
-    } catch(e) {}
-}
+['devvit.json', 'devvit.yaml'].forEach(file => {
+    if (fs.existsSync(file)) {
+        try {
+            fs.unlinkSync(file);
+        } catch(e) {}
+    }
+});
 
 // 1. Check CLI
 try {

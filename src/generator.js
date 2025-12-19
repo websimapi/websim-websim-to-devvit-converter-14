@@ -8,7 +8,7 @@ import { WebSimDetector } from './websim-detector.js';
 
 import {
     generatePackageJson,
-    generateDevvitJson,
+    generateDevvitYaml,
     generateViteConfig,
     tsConfig,
     getMainTsx,
@@ -103,7 +103,7 @@ export async function generateDevvitZip(projectMeta, assets, includeReadme = tru
     }
 
     zip.file("package.json", generatePackageJson(projectSlug, analyzer.dependencies, extraDevDeps));
-    zip.file("devvit.json", generateDevvitJson(projectSlug));
+    zip.file("devvit.yaml", generateDevvitYaml(projectSlug));
     zip.file("vite.config.js", generateViteConfig({ hasReact, hasRemotion }));
     zip.file("tsconfig.json", tsConfig);
     zip.file(".gitignore", "node_modules\n.devvit\nwebroot/assets");
