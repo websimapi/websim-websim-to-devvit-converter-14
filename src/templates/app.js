@@ -53,19 +53,28 @@ Devvit.addCustomPostType({
     const onMessage = async (event: any) => {
       // Robust message parsing
       let msg = event;
-      // If event.data exists (sometimes dependent on environment), use it
-      if (event && event.type && event.data && event.messageId) {
-          // It's already the structure we want
-      } else if (event && event.data) {
-          // Standard postMessage structure
-          msg = event.data;
+      
+      // Attempt to extract the actual payload
+      if (event && typeof event === 'object') {
+          if (event.type && event.data && event.messageId) {
+              // Direct payload
+              msg = event;
+          } else if (event.data && typeof event.data === 'object') {
+              // Wrapped in event.data
+              msg = event.data;
+          }
       } else if (typeof event === 'string') {
           try { msg = JSON.parse(event); } catch(e) {}
       }
 
       const { type, data, messageId } = msg || {};
       
-      if (!type) return; // Unknown message format
+      if (!type) {
+          if (msg && Object.keys(msg).length > 0) {
+            console.log('[Devvit] Received unknown message format:', JSON.stringify(msg));
+          }
+          return;
+      }
 
       // Console logging passthrough
       if (type === 'console') {
@@ -75,13 +84,10 @@ Devvit.addCustomPostType({
       }
 
       // Debug log for bridge
-      if (type.startsWith('user:') || type.startsWith('db:')) {
-          // console.log(\`[Devvit] Bridge Call: \${type}\`);
-      }
+      console.log(\`[Devvit] Bridge Call: \${type} (\${messageId || 'no-id'})\`);
       
       try {
         // Pass userInfo to allow bridge to skip redundant server calls
-        // We ensure userInfo is passed even if null (bridge handles null)
         const result = await bridge.handleMessage(type, data, userInfo);
         
         // Send response back to webview

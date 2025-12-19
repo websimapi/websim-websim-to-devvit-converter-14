@@ -36,6 +36,7 @@ export class DevvitBridge {
   async handleMessage(type: string, data: any, currentUser?: any): Promise<any> {
     // Optimization: If we have pre-fetched user info, use it for identity calls
     if (type === 'user:getCurrent' && currentUser) {
+        console.log('[Bridge] Using cached currentUser for user:getCurrent');
         return { success: true, data: currentUser };
     }
 
@@ -276,12 +277,14 @@ export class DevvitBridge {
   }
 
   private async handleGetCurrentUser(_data: any) {
+    console.log('[Bridge] handleGetCurrentUser called (uncached)');
     // If we're here, it means the optimization failed (no currentUser passed)
     // We try to fetch from Reddit API, but this might fail in some contexts (ServerCallRequired)
     // If it fails, we fallback gracefully to Anonymous/Guest
     try {
       const user = await this.context.reddit.getCurrentUser();
       if (!user) {
+          console.log('[Bridge] No user logged in, returning Guest');
           // Fallback guest if null
           return { 
             success: true, 
@@ -328,6 +331,8 @@ export const websimToDevvitPolyfill = `
       const messageId = uuid();
       pending.set(messageId, { resolve, reject });
       
+      console.log('[Devvit Bridge] Sending:', type, messageId);
+
       // Send to parent
       try {
           window.parent.postMessage({ type, data, messageId }, '*');
@@ -340,7 +345,7 @@ export const websimToDevvitPolyfill = `
       setTimeout(() => {
         if (pending.has(messageId)) {
           pending.delete(messageId);
-          console.warn('[Devvit Bridge] Timeout on ' + type);
+          console.warn('[Devvit Bridge] Timeout on ' + type + ' (' + messageId + ')');
           reject(new Error('Timeout waiting for Devvit server (' + type + ')'));
         }
       }, 30000);
