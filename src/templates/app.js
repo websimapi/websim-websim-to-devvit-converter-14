@@ -58,11 +58,13 @@ Devvit.addCustomPostType({
 
     // Handle messages from webview
     const onMessage = async (event: any) => {
-      const { type, data, messageId } = event.data;
+      // In Devvit Blocks, the event object IS the message payload
+      const msg = event;
+      const { type, data, messageId } = msg;
       
       // Console logging passthrough
       if (type === 'console') {
-          const args = event.data.args || [];
+          const args = msg.args || [];
           console.log('[Web]', ...args);
           return;
       }

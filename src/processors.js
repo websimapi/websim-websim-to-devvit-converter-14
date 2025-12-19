@@ -212,7 +212,6 @@ export class AssetAnalyzer {
              let match;
              while ((match = playerRegex.exec(code)) !== null) {
                  // Check if the prop already exists in the vicinity (heuristic: next 500 chars)
-                 // This avoids duplicate injection if the user already added it or if we run multiple times
                  const vicinity = code.slice(match.index, match.index + 500);
                  const closeIndex = vicinity.indexOf('>');
                  const tagContent = closeIndex > -1 ? vicinity.slice(0, closeIndex) : vicinity;
@@ -220,6 +219,22 @@ export class AssetAnalyzer {
                  if (!tagContent.includes('acknowledgeRemotionLicense')) {
                      // Insert prop right after <Player
                      magic.appendLeft(match.index + 7, ' acknowledgeRemotionLicense={true}');
+                     hasChanges = true;
+                 }
+             }
+        }
+
+        // Also handle explicit usage of Remotion.Player if using namespace import
+        if (code.includes('Player') && code.includes('Remotion')) {
+             const qualifiedRegex = /<Remotion\.Player([\s\n\r/>])/g;
+             let match;
+             while ((match = qualifiedRegex.exec(code)) !== null) {
+                 const vicinity = code.slice(match.index, match.index + 500);
+                 const closeIndex = vicinity.indexOf('>');
+                 const tagContent = closeIndex > -1 ? vicinity.slice(0, closeIndex) : vicinity;
+                 
+                 if (!tagContent.includes('acknowledgeRemotionLicense')) {
+                     magic.appendLeft(match.index + 16, ' acknowledgeRemotionLicense={true}');
                      hasChanges = true;
                  }
              }

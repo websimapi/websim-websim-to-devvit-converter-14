@@ -131,7 +131,8 @@ async function checkRemotion() {
                     console.log('   ✅ License key saved to .env');
                 } else console.warn('   ⚠️  No key entered. You may need to configure REMOTION_LICENSE later.');
             } else {
-                console.log('   ✅ Configuring for Indie/Free usage (Prop injected automatically).');
+                console.log('   ✅ Configuring for Indie/Free usage.');
+                console.log('      (The "acknowledgeRemotionLicense" prop will be injected into <Player /> components.)');
             }
             console.log('');
         }
