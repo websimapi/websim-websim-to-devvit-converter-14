@@ -7,7 +7,8 @@ import { DevvitBridge } from './devvit-bridge.js';
 Devvit.configure({
   redditAPI: true,
   redis: true,
-  http: false,
+  http: true,
+  realtime: true, // Enable Realtime
 });
 
 Devvit.addCustomPostType({
@@ -50,9 +51,22 @@ Devvit.addCustomPostType({
 
     // Handle messages from webview
     const onMessage = async (event: any) => {
-      const msg = event;
-      const { type, data, messageId } = msg;
+      // Robust message parsing
+      let msg = event;
+      // If event.data exists (sometimes dependent on environment), use it
+      if (event && event.type && event.data && event.messageId) {
+          // It's already the structure we want
+      } else if (event && event.data) {
+          // Standard postMessage structure
+          msg = event.data;
+      } else if (typeof event === 'string') {
+          try { msg = JSON.parse(event); } catch(e) {}
+      }
+
+      const { type, data, messageId } = msg || {};
       
+      if (!type) return; // Unknown message format
+
       // Console logging passthrough
       if (type === 'console') {
           const args = msg.args || [];
@@ -60,23 +74,31 @@ Devvit.addCustomPostType({
           return;
       }
 
-      // console.log(\`[Devvit] Rx: \${type} (userInfo: \${!!userInfo})\`);
+      // Debug log for bridge
+      if (type.startsWith('user:') || type.startsWith('db:')) {
+          // console.log(\`[Devvit] Bridge Call: \${type}\`);
+      }
       
       try {
         // Pass userInfo to allow bridge to skip redundant server calls
+        // We ensure userInfo is passed even if null (bridge handles null)
         const result = await bridge.handleMessage(type, data, userInfo);
         
         // Send response back to webview
-        await context.ui.webView.postMessage('game-webview', {
-          type: 'devvit-response',
-          data: { messageId, result }
-        });
+        if (messageId) {
+            await context.ui.webView.postMessage('game-webview', {
+                type: 'devvit-response',
+                data: { messageId, result }
+            });
+        }
       } catch (error: any) {
         console.error(\`[Devvit] Error handling \${type}:\`, error);
-        await context.ui.webView.postMessage('game-webview', {
-          type: 'devvit-response',
-          data: { messageId, error: error.message || 'Unknown error' }
-        });
+        if (messageId) {
+            await context.ui.webView.postMessage('game-webview', {
+                type: 'devvit-response',
+                data: { messageId, error: error.message || 'Unknown error' }
+            });
+        }
       }
     };
 

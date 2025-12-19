@@ -26,11 +26,17 @@ export const generatePackageJson = (slug, dependencies = {}, devDependencies = {
   }
 }, null, 2);
 
-export const generateDevvitYaml = (slug) => `
-name: ${slug}
-version: 0.1.0
-webroot: webroot
-`;
+export const generateDevvitJson = (slug) => JSON.stringify({
+  "name": slug,
+  "version": "0.1.0",
+  "webroot": "webroot",
+  "permissions": {
+    "redis": true,
+    "realtime": true,
+    "reddit_api": true,
+    "http": true // Enabled for external fetch if needed
+  }
+}, null, 2);
 
 export const generateViteConfig = ({ hasReact = false, hasRemotion = false } = {}) => `
 import { defineConfig } from 'vite';
@@ -38,7 +44,7 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   mode: 'production',
-  root: 'client',
+  root: 'client', // Source root
   base: './',
   plugins: [
     ${hasReact ? `react({

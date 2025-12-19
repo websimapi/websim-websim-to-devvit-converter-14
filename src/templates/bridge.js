@@ -281,9 +281,21 @@ export class DevvitBridge {
     // If it fails, we fallback gracefully to Anonymous/Guest
     try {
       const user = await this.context.reddit.getCurrentUser();
-      if (!user) throw new Error('No user found');
+      if (!user) {
+          // Fallback guest if null
+          return { 
+            success: true, 
+            data: { id: 'guest_' + Math.random().toString(36).substr(2,9), username: 'Guest', avatarUrl: this.getDefaultAvatar(), isAnonymous: true } 
+          };
+      }
       
-      const snoovatarUrl = await this.context.reddit.getSnoovatarUrl(user.username);
+      let snoovatarUrl = '';
+      try {
+         snoovatarUrl = await this.context.reddit.getSnoovatarUrl(user.username) || '';
+      } catch(e) {
+         // ignore avatar error
+      }
+
       return { 
         success: true, 
         data: { id: user.id, username: user.username, avatarUrl: snoovatarUrl || this.getDefaultAvatar(), isAnonymous: false } 
@@ -315,27 +327,44 @@ export const websimToDevvitPolyfill = `
     return new Promise((resolve, reject) => {
       const messageId = uuid();
       pending.set(messageId, { resolve, reject });
-      window.parent.postMessage({ type, data, messageId }, '*');
+      
+      // Send to parent
+      try {
+          window.parent.postMessage({ type, data, messageId }, '*');
+      } catch(e) {
+          pending.delete(messageId);
+          reject(new Error('Failed to postMessage: ' + e.message));
+      }
+      
+      // Increased timeout to 30s for slow server/network ops
       setTimeout(() => {
         if (pending.has(messageId)) {
           pending.delete(messageId);
+          console.warn('[Devvit Bridge] Timeout on ' + type);
           reject(new Error('Timeout waiting for Devvit server (' + type + ')'));
         }
-      }, 10000);
+      }, 30000);
     });
   }
 
   window.addEventListener('message', (e) => {
+    // Robust handling of different message structures
     const msg = e.data;
-    if (!msg) return;
+    if (!msg || typeof msg !== 'object') return;
 
-    if (msg.type === 'devvit-response') {
+    // Check for standard bridge response
+    if (msg.type === 'devvit-response' && msg.data) {
       const { messageId, result, error } = msg.data;
+      
       if (pending.has(messageId)) {
         const p = pending.get(messageId);
         pending.delete(messageId);
-        if (error) p.reject(new Error(error));
-        else p.resolve(result && result.data !== undefined ? result.data : result);
+        if (error) {
+            console.error('[Devvit Bridge] Server Error:', error);
+            p.reject(new Error(error));
+        } else {
+            p.resolve(result && result.data !== undefined ? result.data : result);
+        }
       }
     }
   });
