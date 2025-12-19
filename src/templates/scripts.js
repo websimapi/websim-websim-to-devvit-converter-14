@@ -67,10 +67,10 @@ files.forEach(fileObj => {
         }
         
         // Check for http/https usage in imports/scripts
-        // More strict regex to avoid false positives in minified code (e.g. strings containing URLs)
+        // Updated regex to be non-greedy and handle minified code better
         const remoteImportRegex = f.endsWith('.html') 
             ? /<script[^>]+src=["']http/i 
-            : /import\\s+.*from\\s*['"]http|import\\s*['"]http|import\\(['"]http/;
+            : /(?:from|import(?:\\s*\\(?))\\s*['"]https?:\\/\\//;
             
         if (remoteImportRegex.test(content)) {
             console.warn(\`⚠️  Possible remote import in \${f}. Devvit may block this.\`);
@@ -146,14 +146,7 @@ async function checkRemotion() {
     } catch(e) {}
 }
 
-// Cleanup old config if exists to prevent conflicts
-['devvit.json', 'devvit.yaml'].forEach(file => {
-    if (fs.existsSync(file)) {
-        try {
-            fs.unlinkSync(file);
-        } catch(e) {}
-    }
-});
+
 
 // 1. Check CLI
 try {
