@@ -93,18 +93,25 @@ Devvit.addCustomPostType({
         
         // Send response back to webview
         if (messageId) {
+            console.log(\`[Devvit] Sending response for \${messageId}\`);
             await context.ui.webView.postMessage('game-webview', {
                 type: 'devvit-response',
                 data: { messageId, result }
             });
+            console.log(\`[Devvit] Response sent for \${messageId}\`);
         }
       } catch (error: any) {
         console.error(\`[Devvit] Error handling \${type}:\`, error);
         if (messageId) {
-            await context.ui.webView.postMessage('game-webview', {
-                type: 'devvit-response',
-                data: { messageId, error: error.message || 'Unknown error' }
-            });
+            try {
+              await context.ui.webView.postMessage('game-webview', {
+                  type: 'devvit-response',
+                  data: { messageId, error: error.message || 'Unknown error' }
+              });
+              console.log(\`[Devvit] Error response sent for \${messageId}\`);
+            } catch (sendErr) {
+              console.error(\`[Devvit] Failed to send error response for \${messageId}:\`, sendErr);
+            }
         }
       }
     };

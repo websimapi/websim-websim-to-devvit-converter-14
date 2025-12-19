@@ -278,7 +278,7 @@ export class DevvitBridge {
 
   private async handleGetCurrentUser(_data: any) {
     console.log('[Bridge] handleGetCurrentUser called (uncached)');
-    // If we're here, it means the optimization failed (no currentUser passed)
+    // If we're here, it means the optimization passed logic in handleMessage or failed (no currentUser passed)
     // We try to fetch from Reddit API, but this might fail in some contexts (ServerCallRequired)
     // If it fails, we fallback gracefully to Anonymous/Guest
     try {
@@ -357,11 +357,17 @@ export const websimToDevvitPolyfill = `
     const msg = e.data;
     if (!msg || typeof msg !== 'object') return;
 
+    // Debug: Log incoming devvit-responses to verify channel
+    if (msg.type === 'devvit-response') {
+         // console.log('[Devvit Bridge] Raw response received:', msg.data?.messageId);
+    }
+
     // Check for standard bridge response
     if (msg.type === 'devvit-response' && msg.data) {
       const { messageId, result, error } = msg.data;
       
       if (pending.has(messageId)) {
+        console.log('[Devvit Bridge] Resolving pending request:', messageId);
         const p = pending.get(messageId);
         pending.delete(messageId);
         if (error) {
@@ -370,6 +376,8 @@ export const websimToDevvitPolyfill = `
         } else {
             p.resolve(result && result.data !== undefined ? result.data : result);
         }
+      } else {
+        console.warn('[Devvit Bridge] Received response for unknown/timed-out message:', messageId);
       }
     }
   });
