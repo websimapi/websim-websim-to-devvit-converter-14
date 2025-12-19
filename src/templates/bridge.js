@@ -33,7 +33,12 @@ export class DevvitBridge {
     this.messageHandlers.set('user:getCurrent', this.handleGetCurrentUser.bind(this));
   }
 
-  async handleMessage(type: string, data: any): Promise<any> {
+  async handleMessage(type: string, data: any, currentUser?: any): Promise<any> {
+    // Optimization: If we have pre-fetched user info, use it for identity calls
+    if (type === 'user:getCurrent' && currentUser) {
+        return { success: true, data: currentUser };
+    }
+
     // Handle wrapped legacy messages if they slip through
     if (type === 'WEBSIM_SOCKET_MSG' && data && data.payload) {
         // Unwrap and recurse
@@ -53,7 +58,7 @@ export class DevvitBridge {
             if (data.payload.type === 'join') payload = { channelName: 'global' };
             if (data.payload.type === 'db_load') payload = { key: 'collection:' + payload.collection };
             
-            return this.handleMessage(targetType, payload);
+            return this.handleMessage(targetType, payload, currentUser);
         }
     }
 

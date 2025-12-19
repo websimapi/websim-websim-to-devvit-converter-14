@@ -10,20 +10,12 @@ Devvit.configure({
   http: false,
 });
 
-// Track active bridges by post
-const activeBridges = new Map<string, DevvitBridge>();
-
 Devvit.addCustomPostType({
   name: '${title.replace(/'/g, "\\'")}',
   height: 'tall',
   render: (context) => {
-    const postId = context.postId || 'preview';
-    
-    // Initialize bridge for this post if not exists
-    if (!activeBridges.has(postId)) {
-      activeBridges.set(postId, new DevvitBridge(context));
-    }
-    const bridge = activeBridges.get(postId)!;
+    // Initialize bridge with fresh context for every render
+    const bridge = new DevvitBridge(context);
 
     // Fetch user identity using useState with async initializer
     const [userInfo] = context.useState<any>(async () => {
@@ -72,7 +64,8 @@ Devvit.addCustomPostType({
       console.log(\`[Devvit] Received message: \${type}\`);
       
       try {
-        const result = await bridge.handleMessage(type, data);
+        // Pass userInfo to allow bridge to skip redundant server calls
+        const result = await bridge.handleMessage(type, data, userInfo);
         // Send response back to webview
         context.ui.webView.postMessage('game-webview', {
           type: 'devvit-response',
