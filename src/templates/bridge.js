@@ -20,9 +20,10 @@ export class DevvitBridge {
     this.messageHandlers.set('db:set', this.handleRedisSet.bind(this));
     this.messageHandlers.set('db:del', this.handleRedisDel.bind(this));
 
-    // Realtime -> Reddit Realtime
+    // Realtime -> Redis Polling (Devvit Blocks Compatible)
     this.messageHandlers.set('realtime:join', this.handleRealtimeJoin.bind(this));
     this.messageHandlers.set('realtime:send', this.handleRealtimeSend.bind(this));
+    this.messageHandlers.set('realtime:sync', this.handleRealtimeSync.bind(this));
     this.messageHandlers.set('realtime:updatePresence', this.handleUpdatePresence.bind(this));
     this.messageHandlers.set('realtime:updateRoomState', this.handleUpdateRoomState.bind(this));
 
@@ -101,22 +102,25 @@ export class DevvitBridge {
     }
   }
 
-  // REALTIME HANDLERS
+  // REALTIME HANDLERS (Redis Backed)
+  
   private async handleRealtimeJoin(data: { channelName: string }) {
-    try {
-      const channel = this.context.realtime.channel(data.channelName);
-      await channel.subscribe();
-      return { success: true, channelId: data.channelName };
-    } catch (error: any) {
-      console.error('[Realtime] join error:', error);
-      return { success: false, error: error.message };
-    }
+    // Just ack
+    return { success: true, channelId: data.channelName };
   }
 
   private async handleRealtimeSend(data: { channelName: string, message: any }) {
     try {
-      const channel = this.context.realtime.channel(data.channelName);
-      await channel.send(data.message);
+      const msgsKey = \`messages:\${data.channelName}\`;
+      const score = Date.now();
+      const member = JSON.stringify({ ...data.message, timestamp: score });
+      
+      // Add to sorted set (Timeline)
+      await this.context.redis.zAdd(msgsKey, { member, score });
+      
+      // Cleanup old messages (keep last 60s)
+      await this.context.redis.zRemRangeByScore(msgsKey, 0, score - 60000);
+      
       return { success: true };
     } catch (error: any) {
       console.error('[Realtime] send error:', error);
@@ -124,14 +128,55 @@ export class DevvitBridge {
     }
   }
 
+  private async handleRealtimeSync(data: { channelName: string, since: number }) {
+    try {
+      const now = Date.now();
+      const channel = data.channelName;
+      
+      // 1. Cleanup Dead Presence
+      const heartbeatKey = \`heartbeat:\${channel}\`;
+      const presenceKey = \`presence:\${channel}\`;
+      // Remove users who haven't updated in 30s
+      const deadUsers = await this.context.redis.zRangeByScore(heartbeatKey, 0, now - 30000);
+      if (deadUsers && deadUsers.length > 0) {
+          const members = deadUsers.map(u => u.member);
+          await this.context.redis.zRem(heartbeatKey, members);
+          await this.context.redis.hDel(presenceKey, members);
+      }
+      
+      // 2. Get New Messages
+      const msgsKey = \`messages:\${channel}\`;
+      const messagesRaw = await this.context.redis.zRangeByScore(msgsKey, data.since + 1, Infinity);
+      const messages = messagesRaw.map(m => {
+          try { return JSON.parse(m.member); } catch(e) { return null; }
+      }).filter(Boolean);
+      
+      // 3. Get All Presence
+      const presence = await this.context.redis.hGetAll(presenceKey);
+      
+      // 4. Get Room State
+      const roomStateStr = await this.context.redis.get(\`roomstate:\${channel}\`);
+      const roomState = roomStateStr ? JSON.parse(roomStateStr) : {};
+      
+      return { success: true, messages, presence, roomState, timestamp: now };
+    } catch (error: any) {
+      console.error('[Realtime] sync error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
   private async handleUpdatePresence(data: { channelName: string, presence: any }) {
     try {
-      const channel = this.context.realtime.channel(data.channelName);
       const userId = this.context.userId || 'anonymous';
-      const presenceKey = \`presence:\${data.channelName}:\${userId}\`;
-      await this.context.redis.set(presenceKey, JSON.stringify(data.presence));
-      await this.context.redis.expire(presenceKey, 30);
-      await channel.send({ type: 'presence_update', userId, presence: data.presence });
+      const presenceKey = \`presence:\${data.channelName}\`;
+      const heartbeatKey = \`heartbeat:\${data.channelName}\`;
+      
+      // Store data
+      await this.context.redis.hSet(presenceKey, { [userId]: JSON.stringify(data.presence) });
+      
+      // Update heartbeat
+      await this.context.redis.zAdd(heartbeatKey, { member: userId, score: Date.now() });
+      
       return { success: true };
     } catch (error: any) {
       console.error('[Realtime] updatePresence error:', error);
@@ -141,10 +186,8 @@ export class DevvitBridge {
 
   private async handleUpdateRoomState(data: { channelName: string, state: any }) {
     try {
-      const channel = this.context.realtime.channel(data.channelName);
       const stateKey = \`roomstate:\${data.channelName}\`;
       await this.context.redis.set(stateKey, JSON.stringify(data.state));
-      await channel.send({ type: 'roomstate_update', state: data.state });
       return { success: true };
     } catch (error: any) {
       console.error('[Realtime] updateRoomState error:', error);
@@ -226,7 +269,7 @@ export class DevvitBridge {
 
 export const websimToDevvitPolyfill = `
 (function() {
-  console.log('[Devvit Bridge] Initializing WebSim compatibility layer...');
+  console.log('[Devvit Bridge] Initializing WebSim compatibility layer (Blocks Mode)...');
 
   const pending = new Map();
   const uuid = () => Math.random().toString(36).substr(2, 9);
@@ -257,11 +300,6 @@ export const websimToDevvitPolyfill = `
         pending.delete(messageId);
         if (error) p.reject(new Error(error));
         else p.resolve(result && result.data !== undefined ? result.data : result);
-      }
-    } else if (msg.type === 'devvit-realtime') {
-      const payload = msg.data.message;
-      if (window.room && window.room._onRealtime) {
-        window.room._onRealtime(payload);
       }
     }
   });
@@ -299,7 +337,7 @@ export const websimToDevvitPolyfill = `
       
       if (!this.polling) {
         this.polling = true;
-        // Simple polling for DB changes (Realtime is separate)
+        // Simple polling for DB changes
         setInterval(async () => {
            if(this.subs.length === 0) return;
            try {
@@ -322,6 +360,8 @@ export const websimToDevvitPolyfill = `
       this.collections = {};
       this.listeners = {};
       this.connected = false;
+      this.lastSync = 0;
+      this.pollInterval = null;
     }
 
     async initialize() {
@@ -329,7 +369,7 @@ export const websimToDevvitPolyfill = `
       this.connected = true;
 
       try {
-        // 1. Join Realtime Channel
+        // 1. "Join" (Ack)
         await bridgeCall('realtime:join', { channelName: 'global' });
 
         // 2. Get User Identity
@@ -341,9 +381,90 @@ export const websimToDevvitPolyfill = `
         await this.updatePresence({});
         
         console.log('[Devvit Bridge] Connected as', user.username);
+        
+        // 4. Start Polling Loop (The "Realtime" engine for Blocks)
+        this.startPolling();
+
       } catch(e) {
         console.error('[Devvit Bridge] Initialization failed:', e);
       }
+    }
+    
+    startPolling() {
+      if (this.pollInterval) clearInterval(this.pollInterval);
+      this.pollInterval = setInterval(async () => {
+          try {
+              const data = await bridgeCall('realtime:sync', { 
+                  channelName: 'global',
+                  since: this.lastSync 
+              });
+              
+              if (data.success) {
+                  this.handleSync(data);
+              }
+          } catch(e) {
+              console.warn('[Polling] Sync failed', e);
+          }
+      }, 1000); // 1s polling
+    }
+    
+    handleSync(data) {
+        // Update Timestamp
+        if (data.timestamp) this.lastSync = data.timestamp;
+        
+        // 1. Process Messages
+        if (data.messages && data.messages.length > 0) {
+            data.messages.forEach(msg => {
+                if (msg.senderId === this.clientId) return; // Ignore self-echo
+                this._handleIncomingMessage(msg);
+            });
+        }
+        
+        // 2. Process Presence
+        if (data.presence) {
+            const newPresence = {};
+            Object.entries(data.presence).forEach(([uid, jsonStr]) => {
+                try {
+                    newPresence[uid] = JSON.parse(jsonStr);
+                    // Fetch user info if new peer
+                    if (!this.peers[uid]) {
+                         this.peers[uid] = { id: uid, username: 'User', avatarUrl: '' };
+                         bridgeCall('user:getInfo', { userId: uid }).then(u => {
+                            if(u && u.data) this.peers[uid] = u.data;
+                         });
+                    }
+                } catch(e) {}
+            });
+            
+            // Detect changes? For now just replace
+            this.presence = newPresence;
+            this._emit('presence', this.presence);
+        }
+        
+        // 3. Process Room State
+        if (data.roomState) {
+            this.roomState = data.roomState;
+            this._emit('roomState', this.roomState);
+        }
+    }
+    
+    _handleIncomingMessage(msg) {
+        if (msg.type === 'presence_update') {
+            // Handled by sync presence logic usually, but keep for compat
+        } else if (msg.type === 'roomstate_update') {
+            // Handled by sync roomstate
+        } else {
+            // Custom event
+            if (this.onmessage) {
+                this.onmessage({ 
+                    data: { 
+                        ...msg, 
+                        clientId: msg.senderId,
+                        username: this.peers[msg.senderId]?.username || 'User'
+                    } 
+                });
+            }
+        }
     }
 
     collection(name) {
@@ -363,35 +484,14 @@ export const websimToDevvitPolyfill = `
       await bridgeCall('realtime:updateRoomState', { channelName: 'global', state: this.roomState });
     }
     
-    requestPresenceUpdate() { /* Not implemented in bridge yet */ }
+    requestPresenceUpdate() {}
 
     subscribePresence(cb) { return this._on('presence', cb); }
     subscribeRoomState(cb) { return this._on('roomState', cb); }
     
     send(msg) {
+      // Optimistic local echo? No, usually not for broadcast
       bridgeCall('realtime:send', { channelName: 'global', message: { ...msg, senderId: this.clientId } });
-    }
-    
-    _onRealtime(msg) {
-      if (msg.type === 'presence_update') {
-         const { userId, presence } = msg;
-         this.presence[userId] = presence;
-         
-         // If peer unknown, try to fetch info or placeholder
-         if (!this.peers[userId]) {
-            this.peers[userId] = { id: userId, username: 'User', avatarUrl: '' }; // placeholder
-            bridgeCall('user:getInfo', { userId }).then(u => {
-                if(u) this.peers[userId] = u;
-            }).catch(() => {});
-         }
-         
-         this._emit('presence', this.presence);
-      } else if (msg.type === 'roomstate_update') {
-         this.roomState = msg.state;
-         this._emit('roomState', this.roomState);
-      } else {
-         if (this.onmessage) this.onmessage({ data: msg });
-      }
     }
 
     _on(evt, cb) {
@@ -419,15 +519,10 @@ export const websimToDevvitPolyfill = `
     upload: async (blob) => URL.createObjectURL(blob)
   };
   
-  // Helper for generating avatar URLs
   window.getUserAvatar = async (username) => {
      const res = await bridgeCall('user:getAvatar', { username });
      return res;
   };
-  
-  // Auto-init helper if game relies on 'room' variable being global but not instantiated
-  // Some games do: const room = new WebsimSocket();
-  // Others might expect it to exist? Usually not.
   
   console.log('[Devvit Bridge] WebSim compatibility layer ready!');
 })();

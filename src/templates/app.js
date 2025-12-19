@@ -7,7 +7,6 @@ import { DevvitBridge } from './devvit-bridge.js';
 Devvit.configure({
   redditAPI: true,
   redis: true,
-  realtime: true,
   http: false,
 });
 
@@ -26,7 +25,7 @@ Devvit.addCustomPostType({
     }
     const bridge = activeBridges.get(postId)!;
 
-    // Fetch user identity using async useState initializer
+    // Fetch user identity using useState with async initializer
     const [userInfo] = context.useState<any>(async () => {
       try {
         const user = await context.reddit.getCurrentUser();
@@ -85,21 +84,6 @@ Devvit.addCustomPostType({
         });
       }
     };
-
-    // Realtime forwarding setup - runs once on mount
-    const [_realtimeSetup] = context.useState(async () => {
-      if (context.realtime) {
-        // Use the global channel as defined in the bridge polyfill
-        const globalChan = context.realtime.channel('global');
-        await globalChan.subscribe((msg) => {
-            context.ui.webView.postMessage('game-webview', {
-                type: 'devvit-realtime',
-                data: { message: msg }
-            });
-        });
-      }
-      return true;
-    });
 
     if (!userInfo) {
       return (
