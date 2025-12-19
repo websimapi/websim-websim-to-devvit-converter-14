@@ -27,38 +27,38 @@ export class DevvitBridge {
     this.messageHandlers.set('realtime:updatePresence', this.handleUpdatePresence.bind(this));
     this.messageHandlers.set('realtime:updateRoomState', this.handleUpdateRoomState.bind(this));
 
-    // User Identity -> Reddit User API
+    // User Identity -> Reddit User API (Cached)
     this.messageHandlers.set('user:getInfo', this.handleGetUserInfo.bind(this));
     this.messageHandlers.set('user:getAvatar', this.handleGetAvatar.bind(this));
     this.messageHandlers.set('user:getCurrent', this.handleGetCurrentUser.bind(this));
+    
+    // Hotswap / Game State
+    this.messageHandlers.set('game:saveState', this.handleSaveGameState.bind(this));
+    this.messageHandlers.set('game:loadState', this.handleLoadGameState.bind(this));
   }
 
   async handleMessage(type: string, data: any, currentUser?: any): Promise<any> {
-    // Optimization: If we have pre-fetched user info, use it for identity calls
+    // Optimization: If we have pre-fetched user info (L1 Cache), use it
     if (type === 'user:getCurrent' && currentUser) {
-        console.log('[Bridge] Using cached currentUser for user:getCurrent');
+        console.log('[Bridge] Using L1 cached currentUser');
         return { success: true, data: currentUser };
     }
 
-    // Handle wrapped legacy messages if they slip through
+    // Handle legacy wrapped messages
     if (type === 'WEBSIM_SOCKET_MSG' && data && data.payload) {
         // Unwrap and recurse
-        console.log('[Bridge] unwrapping WEBSIM_SOCKET_MSG', data.payload.type);
-        // Map legacy types to bridge types
         const map: Record<string, string> = {
             'join': 'realtime:join',
             'presence_update': 'realtime:updatePresence',
             'room_state_update': 'realtime:updateRoomState',
             'broadcast_event': 'realtime:send',
-            'db_load': 'db:hGetAll', // Approximate mapping
+            'db_load': 'db:hGetAll', 
         };
         const targetType = map[data.payload.type];
         if (targetType) {
-            // Adapt payload differences
             let payload = data.payload.payload || {};
             if (data.payload.type === 'join') payload = { channelName: 'global' };
             if (data.payload.type === 'db_load') payload = { key: 'collection:' + payload.collection };
-            
             return this.handleMessage(targetType, payload, currentUser);
         }
     }
@@ -70,13 +70,27 @@ export class DevvitBridge {
     return await handler(data);
   }
 
-  // REDIS HANDLERS
+  // --- REDIS CACHE HELPERS ---
+  private async getCache(key: string): Promise<any | null> {
+      try {
+          const val = await this.context.redis.get(key);
+          return val ? JSON.parse(val) : null;
+      } catch(e) { return null; }
+  }
+
+  private async setCache(key: string, val: any, ttl?: number) {
+      try {
+          await this.context.redis.set(key, JSON.stringify(val));
+          if (ttl) await this.context.redis.expire(key, ttl);
+      } catch(e) {}
+  }
+
+  // --- DB HANDLERS ---
   private async handleRedisHGetAll(data: { key: string }) {
     try {
       const result = await this.context.redis.hGetAll(data.key);
       return { success: true, data: result || {} };
     } catch (error: any) {
-      console.error('[Redis] hGetAll error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -86,7 +100,6 @@ export class DevvitBridge {
       await this.context.redis.hSet(data.key, data.fields);
       return { success: true };
     } catch (error: any) {
-      console.error('[Redis] hSet error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -96,7 +109,6 @@ export class DevvitBridge {
       await this.context.redis.hDel(data.key, data.fields);
       return { success: true };
     } catch (error: any) {
-      console.error('[Redis] hDel error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -106,7 +118,6 @@ export class DevvitBridge {
       const result = await this.context.redis.get(data.key);
       return { success: true, data: result };
     } catch (error: any) {
-      console.error('[Redis] get error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -116,7 +127,6 @@ export class DevvitBridge {
       await this.context.redis.set(data.key, data.value);
       return { success: true };
     } catch (error: any) {
-      console.error('[Redis] set error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -126,15 +136,35 @@ export class DevvitBridge {
       await this.context.redis.del(data.keys);
       return { success: true };
     } catch (error: any) {
-      console.error('[Redis] del error:', error);
       return { success: false, error: error.message };
     }
   }
 
-  // REALTIME HANDLERS (Redis Backed)
-  
+  // --- GAME STATE HANDLERS (Hotswap Support) ---
+  private async handleSaveGameState(data: { key: string, state: any }) {
+      try {
+          const userId = this.context.userId || 'anon';
+          const fullKey = \`gamestate:\${data.key}:\${userId}\`;
+          await this.context.redis.set(fullKey, JSON.stringify(data.state));
+          return { success: true };
+      } catch(e: any) {
+          return { success: false, error: e.message };
+      }
+  }
+
+  private async handleLoadGameState(data: { key: string }) {
+      try {
+          const userId = this.context.userId || 'anon';
+          const fullKey = \`gamestate:\${data.key}:\${userId}\`;
+          const val = await this.context.redis.get(fullKey);
+          return { success: true, data: val ? JSON.parse(val) : null };
+      } catch(e: any) {
+          return { success: false, error: e.message };
+      }
+  }
+
+  // --- REALTIME HANDLERS ---
   private async handleRealtimeJoin(data: { channelName: string }) {
-    // Just ack
     return { success: true, channelId: data.channelName || 'global' };
   }
 
@@ -143,16 +173,10 @@ export class DevvitBridge {
       const msgsKey = \`messages:\${data.channelName}\`;
       const score = Date.now();
       const member = JSON.stringify({ ...data.message, timestamp: score });
-      
-      // Add to sorted set (Timeline)
       await this.context.redis.zAdd(msgsKey, { member, score });
-      
-      // Cleanup old messages (keep last 60s)
       await this.context.redis.zRemRangeByScore(msgsKey, 0, score - 60000);
-      
       return { success: true };
     } catch (error: any) {
-      console.error('[Realtime] send error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -162,10 +186,9 @@ export class DevvitBridge {
       const now = Date.now();
       const channel = data.channelName;
       
-      // 1. Cleanup Dead Presence
+      // Cleanup
       const heartbeatKey = \`heartbeat:\${channel}\`;
       const presenceKey = \`presence:\${channel}\`;
-      // Remove users who haven't updated in 30s
       const deadUsers = await this.context.redis.zRangeByScore(heartbeatKey, 0, now - 30000);
       if (deadUsers && deadUsers.length > 0) {
           const members = deadUsers.map(u => u.member);
@@ -173,23 +196,22 @@ export class DevvitBridge {
           await this.context.redis.hDel(presenceKey, members);
       }
       
-      // 2. Get New Messages
+      // Messages
       const msgsKey = \`messages:\${channel}\`;
       const messagesRaw = await this.context.redis.zRangeByScore(msgsKey, data.since + 1, Infinity);
       const messages = messagesRaw.map(m => {
           try { return JSON.parse(m.member); } catch(e) { return null; }
       }).filter(Boolean);
       
-      // 3. Get All Presence
+      // Presence
       const presence = await this.context.redis.hGetAll(presenceKey);
       
-      // 4. Get Room State
+      // Room State
       const roomStateStr = await this.context.redis.get(\`roomstate:\${channel}\`);
       const roomState = roomStateStr ? JSON.parse(roomStateStr) : {};
       
       return { success: true, messages, presence, roomState, timestamp: now };
     } catch (error: any) {
-      console.error('[Realtime] sync error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -199,16 +221,10 @@ export class DevvitBridge {
       const userId = this.context.userId || 'anonymous';
       const presenceKey = \`presence:\${data.channelName}\`;
       const heartbeatKey = \`heartbeat:\${data.channelName}\`;
-      
-      // Store data
       await this.context.redis.hSet(presenceKey, { [userId]: JSON.stringify(data.presence) });
-      
-      // Update heartbeat
       await this.context.redis.zAdd(heartbeatKey, { member: userId, score: Date.now() });
-      
       return { success: true };
     } catch (error: any) {
-      console.error('[Realtime] updatePresence error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -219,36 +235,23 @@ export class DevvitBridge {
       await this.context.redis.set(stateKey, JSON.stringify(data.state));
       return { success: true };
     } catch (error: any) {
-      console.error('[Realtime] updateRoomState error:', error);
       return { success: false, error: error.message };
     }
   }
 
-  // USER IDENTITY HANDLERS
+  // --- USER HANDLERS (WITH REDIS CACHE) ---
   private async handleGetUserInfo(data: { userId?: string, username?: string }) {
     try {
-      // Optimization: If asking for current user, return Guest if we can't fetch
-      if (!data.userId && !data.username) {
-          try {
-              const u = await this.context.reddit.getCurrentUser();
-              if (u) return this.handleGetUserInfo({ userId: u.id });
-          } catch(e) {
-              return { success: true, data: { id: 'guest', username: 'Guest', avatarUrl: this.getDefaultAvatar() } };
-          }
-      }
+      if (!data.userId && !data.username) return this.handleGetCurrentUser({});
 
       let user;
       if (data.userId) {
         user = await this.context.reddit.getUserById(data.userId);
       } else if (data.username) {
         user = await this.context.reddit.getUserByUsername(data.username);
-      } else {
-        user = await this.context.reddit.getCurrentUser();
       }
       
-      if (!user) {
-        return { success: false, error: 'User not found' };
-      }
+      if (!user) return { success: false, error: 'User not found' };
       
       const snoovatarUrl = await this.context.reddit.getSnoovatarUrl(user.username);
       return { 
@@ -261,7 +264,6 @@ export class DevvitBridge {
         } 
       };
     } catch (error: any) {
-      console.error('[User] getInfo error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -271,43 +273,57 @@ export class DevvitBridge {
       const snoovatarUrl = await this.context.reddit.getSnoovatarUrl(data.username);
       return { success: true, data: snoovatarUrl || this.getDefaultAvatar() };
     } catch (error: any) {
-      console.error('[User] getAvatar error:', error);
       return { success: false, error: error.message, data: this.getDefaultAvatar() };
     }
   }
 
   private async handleGetCurrentUser(_data: any) {
-    console.log('[Bridge] handleGetCurrentUser called (uncached)');
-    // If we're here, it means the optimization passed logic in handleMessage or failed (no currentUser passed)
-    // We try to fetch from Reddit API, but this might fail in some contexts (ServerCallRequired)
-    // If it fails, we fallback gracefully to Anonymous/Guest
+    const userId = this.context.userId;
+    if (!userId) {
+        // Not logged in
+        return { 
+          success: true, 
+          data: { id: 'guest', username: 'Guest', avatarUrl: this.getDefaultAvatar(), isAnonymous: true } 
+        };
+    }
+
+    // 1. Check Redis Cache
+    const cacheKey = \`user_cache:\${userId}\`;
+    const cached = await this.getCache(cacheKey);
+    if (cached) {
+        console.log('[Bridge] Redis Cache Hit for user', userId);
+        return { success: true, data: cached };
+    }
+
+    // 2. Fetch from API
     try {
+      console.log('[Bridge] Fetching user info from Reddit API...');
       const user = await this.context.reddit.getCurrentUser();
-      if (!user) {
-          console.log('[Bridge] No user logged in, returning Guest');
-          // Fallback guest if null
-          return { 
-            success: true, 
-            data: { id: 'guest_' + Math.random().toString(36).substr(2,9), username: 'Guest', avatarUrl: this.getDefaultAvatar(), isAnonymous: true } 
-          };
-      }
       
+      if (!user) throw new Error('No user returned');
+
       let snoovatarUrl = '';
       try {
          snoovatarUrl = await this.context.reddit.getSnoovatarUrl(user.username) || '';
-      } catch(e) {
-         // ignore avatar error
-      }
+      } catch(e) {}
 
+      const userData = { 
+          id: user.id, 
+          username: user.username, 
+          avatarUrl: snoovatarUrl || this.getDefaultAvatar(), 
+          isAnonymous: false 
+      };
+
+      // 3. Save to Redis (TTL 60s)
+      await this.setCache(cacheKey, userData, 60);
+      
+      return { success: true, data: userData };
+
+    } catch (error: any) {
+      console.warn('[Bridge] User fetch failed, returning Guest fallback:', error.message);
       return { 
         success: true, 
-        data: { id: user.id, username: user.username, avatarUrl: snoovatarUrl || this.getDefaultAvatar(), isAnonymous: false } 
-      };
-    } catch (error: any) {
-      console.warn('[User] getCurrentUser failed (likely ServerCallRequired), falling back to Guest:', error.message);
-      return { 
-        success: true, // Return success so client doesn't timeout/error
-        data: { id: 'guest_' + Math.random().toString(36).substr(2,9), username: 'Guest', avatarUrl: this.getDefaultAvatar(), isAnonymous: true } 
+        data: { id: 'guest_' + userId.substr(0,5), username: 'Guest', avatarUrl: this.getDefaultAvatar(), isAnonymous: true } 
       };
     }
   }
@@ -353,21 +369,18 @@ export const websimToDevvitPolyfill = `
   }
 
   window.addEventListener('message', (e) => {
-    // Robust handling of different message structures
+    // Robust handling: e.data might be the payload or wrapped
     const msg = e.data;
     if (!msg || typeof msg !== 'object') return;
-
-    // Debug: Log incoming devvit-responses to verify channel
-    if (msg.type === 'devvit-response') {
-         // console.log('[Devvit Bridge] Raw response received:', msg.data?.messageId);
-    }
 
     // Check for standard bridge response
     if (msg.type === 'devvit-response' && msg.data) {
       const { messageId, result, error } = msg.data;
       
+      // Debug logging
+      // console.log('[Devvit Bridge Client] Received response', messageId);
+
       if (pending.has(messageId)) {
-        console.log('[Devvit Bridge] Resolving pending request:', messageId);
         const p = pending.get(messageId);
         pending.delete(messageId);
         if (error) {
@@ -377,7 +390,8 @@ export const websimToDevvitPolyfill = `
             p.resolve(result && result.data !== undefined ? result.data : result);
         }
       } else {
-        console.warn('[Devvit Bridge] Received response for unknown/timed-out message:', messageId);
+        // If we received a response for a message ID not in pending, it might have timed out
+        // or it's a duplicate. We ignore it.
       }
     }
   });
