@@ -266,8 +266,8 @@ export class AssetAnalyzer {
         });
 
         // 2. Inject Polyfills (Logger, Bridge)
-        // We inject devvit-bridge-client.js which handles WebSim Socket & DB compatibility correctly
-        const polyfills = `<script type="module" src="./logger.js"></script>\n    <script type="module" src="./websim_stubs.js"></script>\n    <script type="module" src="./devvit-bridge-client.js"></script>`;
+        // We inject devvit-client.js which handles WebSim Socket & DB compatibility correctly
+        const polyfills = `<script type="module" src="./logger.js"></script>\n    <script type="module" src="./websim_stubs.js"></script>\n    <script type="module" src="./devvit-client.js"></script>`;
         if (html.includes('<head>')) {
             html = html.replace('<head>', '<head>\n    ' + polyfills);
         } else {

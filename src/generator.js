@@ -136,9 +136,8 @@ export async function generateDevvitZip(projectMeta, assets, includeReadme = tru
     clientFolder.file("websim_package.js", websimPackageJs);
     clientFolder.file("jsx-dev-proxy.js", jsxDevProxy);
 
-    // Always include Devvit Bridge Client-Side Polyfill
-    // It handles WebSimSocket, Collections, and general Bridge comms
-    clientFolder.file("devvit-bridge-client.js", websimToDevvitPolyfill);
+    // Always include Devvit Client Bridge (Polyfill + API)
+    clientFolder.file("devvit-client.js", websimToDevvitPolyfill);
 
     // Add Remotion Bridge
     if (hasRemotion) {
@@ -152,11 +151,7 @@ export { Player } from '@remotion/player';
     const srcFolder = zip.folder("src");
     srcFolder.file("main.tsx", getMainTsx(projectTitle, indexPath));
 
-    // Add server-side Devvit Bridge if detected
-    if (apiSummary.needsDevvitBridge) {
-        console.log('[Generator] Adding server-side Devvit bridge...');
-        srcFolder.file("devvit-bridge.ts", getDevvitBridgeServerCode());
-    }
+    // Server-side bridge logic is now integrated into main.tsx
     
     const blob = await zip.generateAsync({ type: "blob" });
     return { blob, filename: `${projectSlug}-devvit.zip` };

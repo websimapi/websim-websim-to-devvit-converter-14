@@ -2,127 +2,162 @@ export const getMainTsx = (title, webviewPath) => `/** @jsx Devvit.createElement
 /** @jsxFrag Devvit.Fragment */
 
 import { Devvit } from '@devvit/public-api';
-import { DevvitBridge } from './devvit-bridge.js';
 
 Devvit.configure({
   redditAPI: true,
   redis: true,
-  http: true,
-  realtime: true, // Enable Realtime
+  // Realtime is simulated via Redis polling in Blocks
 });
 
 Devvit.addCustomPostType({
   name: '${title.replace(/'/g, "\\'")}',
   height: 'tall',
   render: (context) => {
-    // Initialize bridge with fresh context for every render
-    const bridge = new DevvitBridge(context);
-
-    // Fetch user identity using useState with async initializer
-    const [userInfo] = context.useState<any>(async () => {
-      try {
-        const user = await context.reddit.getCurrentUser();
-        if (user) {
-          const snoovatarUrl = await context.reddit.getSnoovatarUrl(user.username);
-          return {
-            id: user.id,
-            username: user.username,
-            avatarUrl: snoovatarUrl || getDefaultAvatar(),
-            isAnonymous: false
-          };
-        } else {
-          return {
-            id: 'anonymous',
-            username: 'Guest',
-            avatarUrl: getDefaultAvatar(),
-            isAnonymous: true
-          };
-        }
-      } catch (error) {
-        console.error('[Devvit] Failed to fetch user info:', error);
-        return {
-          id: 'anonymous',
-          username: 'Guest',
-          avatarUrl: getDefaultAvatar(),
-          isAnonymous: true
-        };
-      }
-    });
-
-    // Handle messages from webview
+    
+    // Handle ALL messages from webview here
     const onMessage = async (event: any) => {
-      // Robust message parsing. Devvit 0.11+ passes JSON directly.
-      let msg = event;
+      const msg = event; // In Devvit 0.11+, event IS the payload
       
-      // Attempt to extract the actual payload if it's wrapped oddly
-      if (event && typeof event === 'object') {
-          // Case: { type: '...', data: '...' } (Standard)
-          if (event.type && (event.data !== undefined || event.messageId)) {
-              msg = event;
-          } 
-          // Case: { data: { type: '...' } } (Wrapped in data property)
-          else if (event.data && typeof event.data === 'object') {
-              msg = event.data;
-          }
-      } else if (typeof event === 'string') {
-          try { msg = JSON.parse(event); } catch(e) {}
-      }
-
-      const { type, data, messageId } = msg || {};
-      
-      if (!type) {
-          if (msg && Object.keys(msg).length > 0) {
-            console.log('[Devvit] Received unknown message format:', JSON.stringify(msg));
+      if (!msg || !msg.type || msg.type !== 'devvit-request') {
+          // Pass through console logs if they come in standard format
+          if (msg && msg.type === 'console') {
+              console.log('[Web]', ...(msg.args || []));
           }
           return;
       }
-
-      // Console logging passthrough
-      if (type === 'console') {
-          const args = msg.args || [];
-          console.log('[Web]', ...args);
-          return;
-      }
-
-      // Debug log for bridge
-      console.log(\`[Devvit] Bridge Call: \${type} (\${messageId || 'no-id'})\`);
+      
+      const { messageId, action, payload } = msg;
+      
+      console.log(\`[Server] Handling: \${action}\`);
       
       try {
-        // Pass userInfo to allow bridge to skip redundant server calls
-        const result = await bridge.handleMessage(type, data, userInfo);
+        let result: any;
         
-        // Send response back to webview
-        if (messageId) {
-            console.log(\`[Devvit] Sending response for \${messageId}\`);
-            await context.ui.webView.postMessage('game-webview', {
-                type: 'devvit-response',
-                data: { messageId, result }
-            });
-            console.log(\`[Devvit] Response sent for \${messageId}\`);
+        // === USER IDENTITY ===
+        if (action === 'user:getCurrent') {
+          const user = await context.reddit.getCurrentUser();
+          if (user) {
+            const avatar = await context.reddit.getSnoovatarUrl(user.username);
+            result = {
+              id: user.id,
+              username: user.username,
+              avatarUrl: avatar || getDefaultAvatar(),
+              isAnonymous: false
+            };
+          } else {
+            result = {
+              id: 'guest',
+              username: 'Guest',
+              avatarUrl: getDefaultAvatar(),
+              isAnonymous: true
+            };
+          }
         }
+        
+        else if (action === 'user:getByUsername') {
+          const user = await context.reddit.getUserByUsername(payload.username);
+          if (user) {
+            const avatar = await context.reddit.getSnoovatarUrl(user.username);
+            result = {
+              id: user.id,
+              username: user.username,
+              avatarUrl: avatar || getDefaultAvatar()
+            };
+          } else {
+            throw new Error('User not found');
+          }
+        }
+        
+        // === REDIS DATABASE ===
+        else if (action === 'db:set') {
+          await context.redis.set(payload.key, JSON.stringify(payload.value));
+          result = { success: true };
+        }
+        
+        else if (action === 'db:get') {
+          const value = await context.redis.get(payload.key);
+          result = value ? JSON.parse(value) : null;
+        }
+        
+        else if (action === 'db:hSet') {
+          await context.redis.hSet(payload.key, payload.fields);
+          result = { success: true };
+        }
+        
+        else if (action === 'db:hGetAll') {
+          const data = await context.redis.hGetAll(payload.key);
+          result = data || {};
+        }
+        
+        // === GAME STATE (per user) ===
+        else if (action === 'game:save') {
+          const userId = context.userId || 'guest';
+          await context.redis.set(\`gamestate:\${userId}\`, JSON.stringify(payload.state));
+          result = { success: true };
+        }
+        
+        else if (action === 'game:load') {
+          const userId = context.userId || 'guest';
+          const stateStr = await context.redis.get(\`gamestate:\${userId}\`);
+          result = stateStr ? JSON.parse(stateStr) : null;
+        }
+        
+        // === "REALTIME" (Redis-based) ===
+        else if (action === 'realtime:send') {
+          const channel = payload.channel || 'global';
+          const messagesKey = \`messages:\${channel}\`;
+          const timestamp = Date.now();
+          
+          // Store message with score = timestamp
+          await context.redis.zAdd(messagesKey, {
+            member: JSON.stringify({ ...payload.message, timestamp }),
+            score: timestamp
+          });
+          
+          // Keep only last 100 messages
+          const count = await context.redis.zCard(messagesKey);
+          if (count > 100) {
+            await context.redis.zRemRangeByRank(messagesKey, 0, count - 101);
+          }
+          
+          result = { success: true };
+        }
+        
+        else if (action === 'realtime:getMessages') {
+          const channel = payload.channel || 'global';
+          const since = payload.since || 0;
+          const messagesKey = \`messages:\${channel}\`;
+          
+          // Get messages since timestamp
+          const messages = await context.redis.zRangeByScore(messagesKey, since + 1, Infinity);
+          
+          result = messages.map(m => {
+            try { return JSON.parse(m.member); }
+            catch(e) { return null; }
+          }).filter(Boolean);
+        }
+        
+        else {
+          throw new Error(\`Unknown action: \${action}\`);
+        }
+        
+        // Send response back
+        await context.ui.webView.postMessage('game-webview', {
+          type: 'devvit-response',
+          messageId,
+          result
+        });
+        
       } catch (error: any) {
-        console.error(\`[Devvit] Error handling \${type}:\`, error);
-        if (messageId) {
-            try {
-              await context.ui.webView.postMessage('game-webview', {
-                  type: 'devvit-response',
-                  data: { messageId, error: error.message || 'Unknown error' }
-              });
-              console.log(\`[Devvit] Error response sent for \${messageId}\`);
-            } catch (sendErr) {
-              console.error(\`[Devvit] Failed to send error response for \${messageId}:\`, sendErr);
-            }
-        }
+        console.error(\`[Server] Error in \${action}:\`, error);
+        
+        await context.ui.webView.postMessage('game-webview', {
+          type: 'devvit-response',
+          messageId,
+          error: error.message || 'Unknown error'
+        });
       }
     };
-
-    if (!userInfo) {
-      return (
-        <vstack height="100%" width="100%" alignment="center middle">
-          <text size="large">Loading...</text>
-        </vstack>
-      );
-    }
 
     return (
       <vstack height="100%" width="100%">
@@ -139,44 +174,30 @@ Devvit.addCustomPostType({
 });
 
 function getDefaultAvatar(): string {
-  return 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%233b82f6"/%3E%3Ctext x="50" y="50" text-anchor="middle" dy=".3em" fill="white" font-size="40" font-family="Arial"%3E?%3C/text%3E%3C/svg%3E';
+  return 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%233b82f6"/%3E%3Ctext x="50" y="50" text-anchor="middle" dy=".3em" fill="white" font-size="40"%3E?%3C/text%3E%3C/svg%3E';
 }
 
 Devvit.addMenuItem({
   label: 'Create ${title.replace(/'/g, "\\'")}',
   location: 'subreddit',
-  // forUserType: 'moderator', // Optional constraint
   onPress: async (_event, context) => {
     const { reddit, ui } = context;
-    try {
-      const subreddit = await reddit.getCurrentSubreddit();
-      const post = await reddit.submitPost({
-        title: '${title.replace(/'/g, "\\'")}',
-        subredditName: subreddit.name,
-        preview: (
-          <vstack padding="medium" cornerRadius="medium" height="100%" alignment="center middle" backgroundColor="#0f172a">
-            <text size="xxlarge" weight="bold" color="#f8fafc">${title.replace(/'/g, "\\'")}</text>
-            <spacer size="medium" />
-            <text size="large" color="#94a3b8">Click to start playing</text>
-            <spacer size="large" />
-            <button appearance="primary" onPress={() => context.ui.navigateTo(post)}>Launch Game</button>
-          </vstack>
-        ),
-        // Splash screen configuration (for supported clients)
-        splash: {
-          appDisplayName: '${title.replace(/'/g, "\\'")}',
-          buttonLabel: 'Play Now',
-          description: 'A WebSim Game converted to Devvit',
-          entryUri: '${webviewPath}', // Typically index.html
-        }
-      });
-      ui.showToast({ text: 'Post created!', appearance: 'success' });
-      ui.navigateTo(post);
-    } catch (error) {
-      console.error('Error creating post:', error);
-      ui.showToast({ text: 'Failed to create post', appearance: 'neutral' });
-    }
-  },
+    const subreddit = await reddit.getCurrentSubreddit();
+    
+    const post = await reddit.submitPost({
+      title: '${title.replace(/'/g, "\\'")}',
+      subredditName: subreddit.name,
+      preview: (
+        <vstack padding="medium" alignment="center middle">
+          <text size="xxlarge" weight="bold">🎮 Game</text>
+          <text>Click to play!</text>
+        </vstack>
+      )
+    });
+    
+    ui.showToast({ text: 'Post created!', appearance: 'success' });
+    ui.navigateTo(post);
+  }
 });
 
 export default Devvit;
