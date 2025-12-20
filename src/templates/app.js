@@ -6,7 +6,6 @@ import { Devvit } from '@devvit/public-api';
 Devvit.configure({
   redditAPI: true,
   redis: true,
-  // Realtime is simulated via Redis polling in Blocks
 });
 
 Devvit.addCustomPostType({
@@ -14,12 +13,11 @@ Devvit.addCustomPostType({
   height: 'tall',
   render: (context) => {
     
-    // Handle ALL messages from webview here
+    // Handle ALL messages from webview
     const onMessage = async (event: any) => {
-      const msg = event; // In Devvit 0.11+, event IS the payload
+      const msg = event;
       
       if (!msg || !msg.type || msg.type !== 'devvit-request') {
-          // Pass through console logs if they come in standard format
           if (msg && msg.type === 'console') {
               console.log('[Web]', ...(msg.args || []));
           }
@@ -33,38 +31,69 @@ Devvit.addCustomPostType({
       try {
         let result: any;
         
-        // === USER IDENTITY ===
+        // === USER IDENTITY (FIXED) ===
         if (action === 'user:getCurrent') {
-          const user = await context.reddit.getCurrentUser();
-          if (user) {
-            const avatar = await context.reddit.getSnoovatarUrl(user.username);
-            result = {
-              id: user.id,
-              username: user.username,
-              avatarUrl: avatar || getDefaultAvatar(),
-              isAnonymous: false
-            };
-          } else {
+          const userId = context.userId;
+          
+          if (!userId) {
             result = {
               id: 'guest',
               username: 'Guest',
               avatarUrl: getDefaultAvatar(),
               isAnonymous: true
             };
+          } else {
+            try {
+              const user = await context.reddit.getUserById(userId);
+              
+              if (user) {
+                let avatar = '';
+                try {
+                  avatar = await context.reddit.getSnoovatarUrl(user.username);
+                } catch(e) {
+                  console.warn('[User] Avatar fetch failed');
+                }
+                
+                result = {
+                  id: user.id,
+                  username: user.username,
+                  avatarUrl: avatar || getDefaultAvatar(),
+                  isAnonymous: false
+                };
+              } else {
+                throw new Error('User not found');
+              }
+            } catch (error: any) {
+              console.error('[User] Fetch error:', error.message);
+              result = {
+                id: userId,
+                username: \`User_\${userId.substring(3, 8)}\`,
+                avatarUrl: getDefaultAvatar(),
+                isAnonymous: false
+              };
+            }
           }
         }
         
         else if (action === 'user:getByUsername') {
-          const user = await context.reddit.getUserByUsername(payload.username);
-          if (user) {
-            const avatar = await context.reddit.getSnoovatarUrl(user.username);
-            result = {
-              id: user.id,
-              username: user.username,
-              avatarUrl: avatar || getDefaultAvatar()
-            };
-          } else {
-            throw new Error('User not found');
+          try {
+            const user = await context.reddit.getUserByUsername(payload.username);
+            if (user) {
+              let avatar = '';
+              try {
+                avatar = await context.reddit.getSnoovatarUrl(user.username);
+              } catch(e) {}
+              
+              result = {
+                id: user.id,
+                username: user.username,
+                avatarUrl: avatar || getDefaultAvatar()
+              };
+            } else {
+              throw new Error('User not found');
+            }
+          } catch(e: any) {
+            throw new Error('User lookup failed: ' + e.message);
           }
         }
         
@@ -89,7 +118,7 @@ Devvit.addCustomPostType({
           result = data || {};
         }
         
-        // === GAME STATE (per user) ===
+        // === GAME STATE ===
         else if (action === 'game:save') {
           const userId = context.userId || 'guest';
           await context.redis.set(\`gamestate:\${userId}\`, JSON.stringify(payload.state));
@@ -102,19 +131,17 @@ Devvit.addCustomPostType({
           result = stateStr ? JSON.parse(stateStr) : null;
         }
         
-        // === "REALTIME" (Redis-based) ===
+        // === REALTIME (Redis-based) ===
         else if (action === 'realtime:send') {
           const channel = payload.channel || 'global';
           const messagesKey = \`messages:\${channel}\`;
           const timestamp = Date.now();
           
-          // Store message with score = timestamp
           await context.redis.zAdd(messagesKey, {
             member: JSON.stringify({ ...payload.message, timestamp }),
             score: timestamp
           });
           
-          // Keep only last 100 messages
           const count = await context.redis.zCard(messagesKey);
           if (count > 100) {
             await context.redis.zRemRangeByRank(messagesKey, 0, count - 101);
@@ -128,7 +155,6 @@ Devvit.addCustomPostType({
           const since = payload.since || 0;
           const messagesKey = \`messages:\${channel}\`;
           
-          // Get messages since timestamp
           const messages = await context.redis.zRangeByScore(messagesKey, since + 1, Infinity);
           
           result = messages.map(m => {
@@ -141,7 +167,7 @@ Devvit.addCustomPostType({
           throw new Error(\`Unknown action: \${action}\`);
         }
         
-        // Send response back
+        // Send response
         await context.ui.webView.postMessage('game-webview', {
           type: 'devvit-response',
           messageId,
@@ -149,7 +175,7 @@ Devvit.addCustomPostType({
         });
         
       } catch (error: any) {
-        console.error(\`[Server] Error in \${action}:\`, error);
+        console.error(\`[Server] Error in \${action}:\`, error.message);
         
         await context.ui.webView.postMessage('game-webview', {
           type: 'devvit-response',
@@ -189,7 +215,7 @@ Devvit.addMenuItem({
       subredditName: subreddit.name,
       preview: (
         <vstack padding="medium" alignment="center middle">
-          <text size="xxlarge" weight="bold">🎮 Game</text>
+          <text size="xxlarge" weight="bold">🎮 ${title.replace(/'/g, "\\'")}</text>
           <text>Click to play!</text>
         </vstack>
       )
