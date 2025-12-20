@@ -12,7 +12,39 @@ Devvit.addCustomPostType({
   name: '${title.replace(/'/g, "\\'")}',
   height: 'tall',
   render: (context) => {
-    
+
+    // Pre-fetch current user info during render to avoid ServerCallRequired in onMessage
+    const [userInfo] = context.useState(async () => {
+      const userId = context.userId;
+      if (!userId) {
+        return { 
+          id: 'guest', 
+          username: 'Guest', 
+          avatarUrl: getDefaultAvatar(), 
+          isAnonymous: true 
+        };
+      }
+      try {
+        const user = await context.reddit.getUserById(userId);
+        if (!user) throw new Error('User not found');
+        
+        const avatar = await context.reddit.getSnoovatarUrl(user.username).catch(() => '');
+        return { 
+          id: user.id, 
+          username: user.username, 
+          avatarUrl: avatar || getDefaultAvatar(), 
+          isAnonymous: false 
+        };
+      } catch(e) {
+        return { 
+          id: userId, 
+          username: \`User_\${userId.substring(3, 8)}\`, 
+          avatarUrl: getDefaultAvatar(), 
+          isAnonymous: false 
+        };
+      }
+    });
+
     // Handle ALL messages from webview
     const onMessage = async (event: any) => {
       const msg = event;
@@ -26,75 +58,30 @@ Devvit.addCustomPostType({
       
       const { messageId, action, payload } = msg;
       
-      console.log(\`[Server] Handling: \${action}\`);
+      // console.log(\`[Server] Handling: \${action}\`);
       
       try {
         let result: any;
         
-        // === USER IDENTITY (FIXED) ===
+        // === USER IDENTITY ===
         if (action === 'user:getCurrent') {
-          const userId = context.userId;
-          
-          if (!userId) {
-            result = {
-              id: 'guest',
-              username: 'Guest',
-              avatarUrl: getDefaultAvatar(),
-              isAnonymous: true
-            };
-          } else {
-            try {
-              const user = await context.reddit.getUserById(userId);
-              
-              if (user) {
-                let avatar = '';
-                try {
-                  avatar = await context.reddit.getSnoovatarUrl(user.username);
-                } catch(e) {
-                  console.warn('[User] Avatar fetch failed');
-                }
-                
-                result = {
-                  id: user.id,
-                  username: user.username,
-                  avatarUrl: avatar || getDefaultAvatar(),
-                  isAnonymous: false
-                };
-              } else {
-                throw new Error('User not found');
-              }
-            } catch (error: any) {
-              console.error('[User] Fetch error:', error.message);
-              result = {
-                id: userId,
-                username: \`User_\${userId.substring(3, 8)}\`,
-                avatarUrl: getDefaultAvatar(),
-                isAnonymous: false
-              };
-            }
-          }
+          result = userInfo;
         }
         
         else if (action === 'user:getByUsername') {
-          try {
-            const user = await context.reddit.getUserByUsername(payload.username);
-            if (user) {
-              let avatar = '';
-              try {
-                avatar = await context.reddit.getSnoovatarUrl(user.username);
-              } catch(e) {}
-              
-              result = {
-                id: user.id,
-                username: user.username,
-                avatarUrl: avatar || getDefaultAvatar()
-              };
-            } else {
-              throw new Error('User not found');
-            }
-          } catch(e: any) {
-            throw new Error('User lookup failed: ' + e.message);
-          }
+           // Cannot call Reddit API in onMessage. 
+           // If it's the current user, return cached info.
+           if (payload.username === userInfo.username) {
+               result = userInfo;
+           } else {
+               // Fallback: We can't fetch other users dynamically in onMessage. 
+               // Return a dummy structure to prevent crashes.
+               result = {
+                   id: 'u_' + payload.username, 
+                   username: payload.username, 
+                   avatarUrl: getDefaultAvatar()
+               };
+           }
         }
         
         // === REDIS DATABASE ===
